@@ -1,6 +1,6 @@
 <h1><img src="docs/newline.png" alt="Newline" width="660"></h1>
 
-A small Mac app for reading and editing Markdown. Open a file, write directly in the formatted text, and save it as `.md`.
+A small, very simple Mac app for reading and editing Markdown. Open a file, write directly in the formatted text, and save it as `.md`.
 
 Each document opens in its own window. [Try the sample document](Examples/Welcome.md) for a page of headings, checklists, tables and footnotes.
 
