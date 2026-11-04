@@ -1,6 +1,8 @@
-# Newline
+<h1><img src="docs/newline.png" alt="Newline" width="660"></h1>
 
-Newline is a native Markdown editor for macOS. Write directly in formatted text, navigate by heading, and keep each document in its own window. The editor menus are in German. Documents are ordinary Markdown files. Images saved alongside a document live in its companion `.assets` folder. Keep the two together when sharing them.
+A small Mac app for reading and editing Markdown. Open a file, write directly in the formatted text, and save it as `.md`.
+
+Each document opens in its own window. [Try the sample document](Examples/Welcome.md) for a page of headings, checklists, tables and footnotes.
 
 ## Install from source
 
@@ -21,7 +23,9 @@ The build script signs the app locally on your Mac. To select Newline as your de
 
 ## Editing
 
-Hover near the top of a document window to see the counter and outline button. Open [Welcome.md](Examples/Welcome.md) to try tables, checklists, links, code blocks and footnotes.
+The editor menus are in German. When you share a document with images, include its companion `.assets` folder.
+
+Hover near the top of a document window to see the counter and outline button.
 
 | Action | Shortcut |
 | --- | --- |
