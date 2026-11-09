@@ -44,14 +44,13 @@ Hover near the top of a document window to see the counter and outline button.
 
 ## Development
 
-The app and editor are in `Sources/Newline`. Markdown parsing and image storage are in `Sources/NewlineCore`. To build a debug app and run the checks:
+The app and editor are in `Sources/Newline`. Markdown parsing and image storage are in `Sources/NewlineCore`. To run all checks and build the app:
 
 ```sh
-./scripts/build-app.sh --debug
-swift run NewlineChecks
-swift run Newline --check
-swift run Newline --lifecycle-check
+./scripts/check.sh
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch, review, and release workflow and [CHANGELOG.md](CHANGELOG.md) for version history. GitHub runs the same checks for every pull request and release tag.
 
 ## Licenses
 
