@@ -10,7 +10,122 @@ func runIntegrationChecks() throws -> Int {
                           userInfo: [NSLocalizedDescriptionKey: message])
         }
     }
+    func waitUntil(_ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(3)
+        while !condition() && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        return condition()
+    }
     let tests: [(String, () throws -> Void)] = [
+        ("External in-place and repeated atomic saves refresh the editor", {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NewlineReload-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let file = directory.appendingPathComponent("Note.md")
+            try Data("Original text\n".utf8).write(to: file)
+            let f = try EditorCheckFixture(fileURL: file)
+            defer { f.document.close() }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            f.text.setSelectedRange(NSRange(location: 2, length: 3))
+            for (index, value) in ["External text\n", "# Atomic heading\n", "# Second replacement\n"].enumerated() {
+                try Data(value.utf8).write(to: file, options: index == 0 ? [] : .atomic)
+                try require(waitUntil { f.document.source == value && f.text.string.contains(index == 0 ? "External" : index == 1 ? "Atomic" : "Second") }, "External save did not reach the document and editor: \(value)")
+                try require(!f.document.isDocumentEdited, "Reload made the document dirty")
+                try require(f.text.selectedRange() == NSRange(location: 2, length: 3), "Reload lost selection")
+            }
+            try require(f.session.headings.first?.title == "Second replacement", "Reload did not update the outline")
+            f.action { f.type("Local") }
+            f.document.undoManager?.undo()
+            try require(f.document.source == "# Second replacement\n" && !f.document.isDocumentEdited, "Undo after reload did not return to the new saved baseline")
+        }),
+        ("External saves preserve unsaved local edits", {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NewlineReloadConflict-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let file = directory.appendingPathComponent("Note.md")
+            try Data("Original\n".utf8).write(to: file)
+            let f = try EditorCheckFixture(fileURL: file)
+            defer { f.document.close() }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            f.action { f.type("Local ") }
+            let local = f.document.source
+            try Data("External\n".utf8).write(to: file, options: .atomic)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+            try require(f.document.source == local && f.text.string.contains("Local"), "External change discarded local edits")
+            try require(f.document.isDocumentEdited, "Conflict incorrectly cleared the dirty state")
+            let diskSource = try String(contentsOf: file, encoding: .utf8)
+            try require(diskSource == "External\n", "Watcher overwrote the external file")
+            f.document.undoManager?.undo()
+            try require(waitUntil { f.document.source == "External\n" && f.text.string.contains("External") }, "Undoing local edits did not resume automatic refresh")
+        }),
+        ("Save As follows the new file and unchanged writes preserve undo", {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NewlineReloadSaveAs-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let oldFile = directory.appendingPathComponent("Old.md")
+            let newFile = directory.appendingPathComponent("New.md")
+            try Data("Original\n".utf8).write(to: oldFile)
+            let f = try EditorCheckFixture(fileURL: oldFile)
+            defer { f.document.close() }
+            f.action { f.type("Saved ") }
+            let savedSource = f.document.source
+            var completed = false
+            var saveError: Error?
+            f.document.save(to: newFile, ofType: "net.daringfireball.markdown", for: .saveAsOperation) { error in
+                saveError = error; completed = true
+            }
+            try require(waitUntil { completed } && saveError == nil, "Save As failed")
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            var reloads = 0
+            f.document.onSourceReload = { [weak session = f.session] source in
+                reloads += 1; session?.reload(source)
+            }
+            try Data(savedSource.utf8).write(to: newFile, options: .atomic)
+            try Data("Old file changed\n".utf8).write(to: oldFile, options: .atomic)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+            try require(f.document.source == savedSource && reloads == 0, "Own/unchanged or old-file writes caused a reload")
+            try require(f.document.undoManager?.canUndo == true, "Own save discarded undo history")
+            try Data("New file changed\n".utf8).write(to: newFile, options: .atomic)
+            try require(waitUntil { f.document.source == "New file changed\n" && reloads > 0 }, "Save As did not watch the new path")
+            try require(f.document.undoManager?.canUndo == false, "External reload retained undo actions for stale text")
+        }),
+        ("External reload retains the reading position", {
+            let f = try EditorCheckFixture(String(repeating: "A paragraph to scroll through.\n\n", count: 120))
+            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 760, height: 300))
+            f.text.isVerticallyResizable = true
+            f.text.maxSize = NSSize(width: 760, height: 100_000)
+            scroll.documentView = f.text
+            f.text.layoutManager?.ensureLayout(for: f.text.textContainer!)
+            f.text.sizeToFit()
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: 500))
+            let before = scroll.contentView.bounds.origin
+            try require(before.y > 0, "Scroll fixture did not scroll")
+            f.session.reload(f.document.source + "Another paragraph.\n")
+            try require(scroll.contentView.bounds.origin == before, "Reload jumped away from the reading position")
+        }),
+        ("File recreation, invalid UTF-8, and closing are safe", {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("NewlineReloadRecovery-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let file = directory.appendingPathComponent("Note.md")
+            try Data("Original\n".utf8).write(to: file)
+            let f = try EditorCheckFixture(fileURL: file)
+            defer { f.document.close() }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            try Data([0xFF, 0xFE]).write(to: file)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            try require(f.document.source == "Original\n", "Invalid text replaced the buffer")
+            try FileManager.default.removeItem(at: file)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            try require(f.document.source == "Original\n", "Deletion cleared the buffer")
+            try Data("Recreated\n".utf8).write(to: file, options: .atomic)
+            try require(waitUntil { f.document.source == "Recreated\n" }, "Recreated file was not detected")
+            f.document.close()
+            try Data("After close\n".utf8).write(to: file, options: .atomic)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.4))
+            try require(f.document.source == "Recreated\n", "Closed document still refreshed")
+        }),
         ("Shortcut help leaves ordinary question marks editable", {
             func key(_ chars: String, _ flags: NSEvent.ModifierFlags) -> NSEvent {
                 NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
@@ -379,9 +494,13 @@ private final class EditorCheckFixture {
     let session: EditorSession
     let text: NewlineTextView
 
-    init(_ source: String = "") throws {
-        document = MarkdownDocument()
-        try document.read(from: Data(source.utf8), ofType: "net.daringfireball.markdown")
+    init(_ source: String = "", fileURL: URL? = nil) throws {
+        if let fileURL {
+            document = try MarkdownDocument(contentsOf: fileURL, ofType: "net.daringfireball.markdown")
+        } else {
+            document = MarkdownDocument()
+            try document.read(from: Data(source.utf8), ofType: "net.daringfireball.markdown")
+        }
         session = EditorSession(document: document)
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
@@ -398,6 +517,7 @@ private final class EditorCheckFixture {
         text.isAutomaticDashSubstitutionEnabled = false
         text.isAutomaticTextReplacementEnabled = false
         session.attach(text)
+        document.onSourceReload = { [weak session] source in session?.reload(source) }
         document.undoManager?.removeAllActions()
         document.undoManager?.groupsByEvent = false
         document.updateChangeCount(.changeCleared)

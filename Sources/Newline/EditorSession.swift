@@ -39,8 +39,15 @@ final class EditorSession: NSObject, ObservableObject, NSTextViewDelegate {
         statisticsWork?.cancel(); statisticsGeneration += 1
         updating = true
         let selection = text.selectedRange()
+        let scrollOrigin = text.enclosingScrollView?.contentView.bounds.origin
         text.textStorage?.setAttributedString(codec.render(source, baseURL: document?.fileURL?.deletingLastPathComponent(), fontSize: fontSize))
-        text.setSelectedRange(NSRange(location: min(selection.location, text.string.utf16.count), length: 0))
+        let location = min(selection.location, text.string.utf16.count)
+        text.setSelectedRange(NSRange(location: location, length: min(selection.length, text.string.utf16.count - location)))
+        if let scrollOrigin, let scroll = text.enclosingScrollView {
+            if let container = text.textContainer { text.layoutManager?.ensureLayout(for: container) }
+            scroll.contentView.scroll(to: scrollOrigin)
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
         text.typingAttributes = MarkdownStyle.attributes(fontSize: fontSize)
         updating = false
         updateStatistics(source: source)

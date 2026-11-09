@@ -22,7 +22,51 @@ final class MarkdownDocument: NSDocument {
     var onSourceReload: ((String) -> Void)?
     private var saveCallbacks: [(Bool) -> Void] = []
     private var requiresExplicitSave = false
+    private var fileMonitor: DocumentFileMonitor?
+    private var monitoredURL: URL?
+    private var isClosed = false
+    private var savesInProgress = 0
     var source: String { storage.source }
+
+    nonisolated override var fileURL: URL? {
+        get { super.fileURL }
+        set {
+            super.fileURL = newValue
+            DispatchQueue.main.async { [weak self] in self?.updateFileMonitor() }
+        }
+    }
+
+    private func updateFileMonitor() {
+        guard !isClosed, monitoredURL != fileURL else { return }
+        fileMonitor = nil
+        monitoredURL = fileURL
+        guard let fileURL, fileURL.isFileURL else { return }
+        fileMonitor = DocumentFileMonitor(url: fileURL) { [weak self] in
+            self?.reloadExternalChanges()
+        }
+        reloadExternalChanges()
+    }
+
+    private func reloadExternalChanges() {
+        // Leave concurrent local edits to NSDocument's native conflict handling.
+        // Never revert during a save or replace an unsaved editing buffer.
+        guard !isClosed, savesInProgress == 0, !isDocumentEdited,
+              let url = fileURL, url == monitoredURL, let type = fileType,
+              let data = try? Data(contentsOf: url),
+              let external = String(data: data, encoding: .utf8), external != source else { return }
+        do {
+            try revert(toContentsOf: url, ofType: type)
+        } catch {
+            // A missing or temporarily unreadable file must leave the open text intact.
+            willNotPresentError(error)
+        }
+    }
+
+    override func close() {
+        isClosed = true
+        fileMonitor = nil
+        super.close()
+    }
 
     override init() {
         super.init()
@@ -62,7 +106,10 @@ final class MarkdownDocument: NSDocument {
         }
         storage.source = string
         storage.savedSource = string
-        DispatchQueue.main.async { [weak self] in self?.onSourceReload?(string) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.source == string else { return }
+            self.onSourceReload?(string)
+        }
     }
 
     nonisolated override func data(ofType typeName: String) throws -> Data {
@@ -86,6 +133,11 @@ final class MarkdownDocument: NSDocument {
         if change == .changeDone || change == .changeUndone || change == .changeRedone {
             super.updateChangeCount(!requiresExplicitSave && storage.source == storage.savedSource ? .changeCleared : .changeDone)
         } else { super.updateChangeCount(change) }
+        if !isDocumentEdited {
+            // An external change may have arrived while local edits were dirty.
+            // Recheck when undo or saving makes it safe to refresh again.
+            DispatchQueue.main.async { [weak self] in self?.reloadExternalChanges() }
+        }
     }
 
     func ensureSaved(completion: @escaping (Bool) -> Void) {
@@ -122,8 +174,10 @@ final class MarkdownDocument: NSDocument {
             }
         } catch { completionHandler(error); return }
         storage.source = relocated
+        savesInProgress += 1
         super.save(to: url, ofType: typeName, for: saveOperation) { [weak self] error in
             guard let self else { completionHandler(error); return }
+            self.savesInProgress -= 1
             if error != nil || saveOperation == .saveToOperation {
                 if self.storage.source == relocated { self.storage.source = before }
             } else {
@@ -137,6 +191,7 @@ final class MarkdownDocument: NSDocument {
                 }
             }
             completionHandler(error)
+            self.reloadExternalChanges()
         }
     }
 
@@ -183,8 +238,10 @@ final class MarkdownDocument: NSDocument {
 
     private func nativeSave(to url: URL, completion: @escaping (Error?) -> Void) {
         let writtenSource = storage.source
+        savesInProgress += 1
         super.save(to: url, ofType: fileType ?? "net.daringfireball.markdown", for: .saveOperation,
                    completionHandler: { [weak self] error in
+                       self?.savesInProgress -= 1
                        if error == nil, let self {
                            self.storage.savedSource = writtenSource
                            if self.storage.source == writtenSource { self.updateChangeCount(.changeCleared) }

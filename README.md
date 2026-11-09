@@ -25,6 +25,8 @@ The build script signs the app locally on your Mac. To select Newline as your de
 
 The editor menus are in German. When you share a document with images, include its companion `.assets` folder.
 
+Open documents automatically refresh when another app changes the Markdown file, including saves that replace the file. The selection and scroll position are retained where possible. Unsaved edits in Newline are kept; conflicting changes remain subject to the native macOS document conflict handling.
+
 Hover near the top of a document window to see the counter and outline button.
 
 | Action | Shortcut |
